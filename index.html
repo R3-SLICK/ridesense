@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>RideSense — Helmet Cam Hazard Detection</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.22.0/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<style>
+  :root{
+    --asphalt:#0A0C0E;
+    --gunmetal:#171B20;
+    --panel:#1E232B;
+    --steel:#4A5568;
+    --steel-dim:#2C333D;
+    --amber:#FFA630;
+    --danger:#FF3B30;
+    --cyan:#4CD9E8;
+    --lime:#8BC53F;
+    --paper:#E7EAEE;
+    --paper-dim:#8B93A1;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;background:var(--asphalt);color:var(--paper);
+    font-family:'Inter',sans-serif; overflow-x:hidden;}
+  body{padding-bottom:env(safe-area-inset-bottom);}
+  .app{max-width:520px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column;
+    background:linear-gradient(180deg,#0D1013,#0A0C0E 40%);}
+
+  /* ---------- top bar ---------- */
+  .topbar{display:flex;align-items:center;justify-content:space-between;
+    padding:14px 16px 10px;}
+  .brand{display:flex;align-items:center;gap:9px;}
+  .brand-mark{width:30px;height:30px;border-radius:8px;background:conic-gradient(from 220deg,var(--amber),var(--danger) 35%,var(--cyan) 70%,var(--amber));
+    display:flex;align-items:center;justify-content:center;font-family:'Rajdhani';font-weight:700;font-size:15px;color:#0A0C0E;}
+  .brand-name{font-family:'Rajdhani';font-weight:700;font-size:19px;letter-spacing:0.5px;}
+  .brand-sub{font-family:'IBM Plex Mono';font-size:9.5px;color:var(--paper-dim);letter-spacing:1.5px;text-transform:uppercase;margin-top:1px;}
+  .rec-pill{display:flex;align-items:center;gap:6px;background:var(--panel);
+    border:1px solid var(--steel-dim);padding:5px 10px;border-radius:20px;
+    font-family:'IBM Plex Mono';font-size:10.5px;color:var(--paper-dim);}
+  .rec-dot{width:7px;height:7px;border-radius:50%;background:var(--steel);}
+  .rec-pill.live .rec-dot{background:var(--danger);box-shadow:0 0 6px var(--danger);animation:pulse 1.4s infinite;}
+  .rec-pill.live{color:var(--paper);}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+  @media (prefers-reduced-motion: reduce){.rec-pill.live .rec-dot{animation:none;}}
+
+  /* ---------- visor / camera viewport ---------- */
+  .visor-wrap{padding:0 14px;}
+  .visor{position:relative;border-radius:26px;overflow:hidden;aspect-ratio:3/4;
+    background:#000; border:2px solid var(--steel-dim);
+    box-shadow:inset 0 0 0 6px var(--gunmetal), inset 0 0 0 7px var(--steel-dim),
+      0 10px 30px -10px rgba(0,0,0,.8);}
+  video, .stream-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;}
+  canvas.overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
+
+  .visor-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:12px;text-align:center;padding:30px;color:var(--paper-dim);}
+  .visor-empty .icon{font-size:34px;}
+  .btn-enable{background:var(--amber);color:#1a1200;border:none;padding:11px 20px;
+    border-radius:10px;font-family:'Rajdhani';font-weight:700;font-size:15px;letter-spacing:.4px;}
+
+  /* tick bezel corners */
+  .tick{position:absolute;width:18px;height:18px;border-color:rgba(255,166,48,.55);
+    border-style:solid;border-width:0;}
+  .tick.tl{top:10px;left:10px;border-top-width:2px;border-left-width:2px;border-radius:8px 0 0 0;}
+  .tick.tr{top:10px;right:10px;border-top-width:2px;border-right-width:2px;border-radius:0 8px 0 0;}
+  .tick.bl{bottom:10px;left:10px;border-bottom-width:2px;border-left-width:2px;border-radius:0 0 0 8px;}
+  .tick.br{bottom:10px;right:10px;border-bottom-width:2px;border-right-width:2px;border-radius:0 0 8px 0;}
+
+  .hud-readout{position:absolute;top:14px;left:50%;transform:translateX(-50%);
+    display:flex;gap:14px;background:rgba(10,12,14,.55);backdrop-filter:blur(4px);
+    padding:5px 12px;border-radius:20px;border:1px solid rgba(255,255,255,.08);
+    font-family:'IBM Plex Mono';font-size:10px;color:var(--cyan);letter-spacing:.5px;}
+
+  /* critical alert banner over visor */
+  .alert-banner{position:absolute;left:10px;right:10px;bottom:12px;
+    border-radius:12px;padding:10px 14px;display:none;align-items:center;gap:10px;
+    font-family:'Rajdhani';font-weight:700;font-size:16px;letter-spacing:.3px;
+    box-shadow:0 6px 18px -6px rgba(0,0,0,.6);}
+  .alert-banner.show{display:flex;}
+  .alert-banner.critical{background:rgba(255,59,48,.92);color:#fff;animation:flash 0.9s infinite;}
+  .alert-banner.caution{background:rgba(255,166,48,.94);color:#1a1200;}
+  @keyframes flash{0%,100%{opacity:1;}50%{opacity:.72;}}
+  @media (prefers-reduced-motion: reduce){.alert-banner.critical{animation:none;}}
+  .alert-banner .glyph{font-size:20px;line-height:1;}
+
+  /* ---------- console: radar + ticker ---------- */
+  .console{display:grid;grid-template-columns:128px 1fr;gap:10px;padding:12px 14px 0;}
+  .card{background:var(--panel);border:1px solid var(--steel-dim);border-radius:14px;padding:10px;}
+  .card-label{font-family:'IBM Plex Mono';font-size:9px;letter-spacing:1.5px;
+    text-transform:uppercase;color:var(--paper-dim);margin-bottom:6px;}
+  .radar canvas{width:100%;display:block;}
+  .ticker{height:150px;overflow-y:auto;display:flex;flex-direction:column-reverse;gap:6px;}
+  .ticker::-webkit-scrollbar{width:4px;}
+  .ticker::-webkit-scrollbar-thumb{background:var(--steel-dim);border-radius:4px;}
+  .tick-row{display:flex;align-items:flex-start;gap:7px;font-family:'IBM Plex Mono';font-size:11px;
+    line-height:1.35; animation:slidein .25s ease;}
+  @keyframes slidein{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:none;}}
+  .tick-row .dot{width:7px;height:7px;border-radius:50%;margin-top:4px;flex:none;}
+  .tick-row .msg{color:var(--paper);}
+  .tick-row .t{color:var(--paper-dim);}
+  .tick-row.empty{color:var(--paper-dim);font-style:italic;}
+
+  /* ---------- controls ---------- */
+  .controls{padding:14px;display:flex;flex-direction:column;gap:12px;}
+  .row{display:flex;align-items:center;gap:10px;}
+  .row.between{justify-content:space-between;}
+  .go-btn{flex:1;padding:15px;border-radius:14px;border:none;font-family:'Rajdhani';
+    font-weight:700;font-size:18px;letter-spacing:.5px;display:flex;align-items:center;
+    justify-content:center;gap:8px;}
+  .go-btn.start{background:var(--lime);color:#0e1a04;}
+  .go-btn.stop{background:var(--danger);color:#fff;}
+  .icon-btn{width:48px;height:48px;border-radius:14px;background:var(--panel);
+    border:1px solid var(--steel-dim);color:var(--paper);font-size:19px;display:flex;
+    align-items:center;justify-content:center;flex:none;}
+  .icon-btn.active{border-color:var(--cyan);color:var(--cyan);box-shadow:0 0 0 1px var(--cyan) inset;}
+
+  .segmented{display:flex;background:var(--panel);border:1px solid var(--steel-dim);
+    border-radius:12px;padding:3px;gap:3px;}
+  .segmented button{flex:1;background:transparent;border:none;color:var(--paper-dim);
+    font-family:'Inter';font-size:12px;font-weight:600;padding:9px 4px;border-radius:9px;}
+  .segmented button.active{background:var(--steel-dim);color:var(--paper);}
+
+  .panel-fade{max-height:0;overflow:hidden;transition:max-height .25s ease;}
+  .panel-fade.open{max-height:260px;}
+  .panel-inner{background:var(--panel);border:1px solid var(--steel-dim);border-radius:14px;
+    padding:14px;display:flex;flex-direction:column;gap:12px;margin-top:2px;}
+  .field-label{font-family:'IBM Plex Mono';font-size:10px;letter-spacing:1px;text-transform:uppercase;
+    color:var(--paper-dim);margin-bottom:6px;display:block;}
+  input[type=range]{width:100%;accent-color:var(--amber);}
+  input[type=text]{width:100%;background:var(--gunmetal);border:1px solid var(--steel-dim);
+    color:var(--paper);padding:10px;border-radius:9px;font-family:'IBM Plex Mono';font-size:12px;}
+  .small-btn{background:var(--steel-dim);color:var(--paper);border:none;border-radius:9px;
+    padding:9px 12px;font-family:'Inter';font-weight:600;font-size:12px;}
+  .toggle-row{display:flex;align-items:center;justify-content:space-between;}
+  .switch{width:42px;height:24px;border-radius:14px;background:var(--steel-dim);position:relative;
+    flex:none;border:none;}
+  .switch::after{content:'';position:absolute;width:18px;height:18px;border-radius:50%;
+    background:var(--paper-dim);top:3px;left:3px;transition:all .18s ease;}
+  .switch.on{background:rgba(140,197,63,.35);}
+  .switch.on::after{left:21px;background:var(--lime);}
+
+  .legend{display:flex;gap:12px;flex-wrap:wrap;font-family:'IBM Plex Mono';font-size:10px;color:var(--paper-dim);
+    padding:0 14px 6px;}
+  .legend span{display:flex;align-items:center;gap:5px;}
+  .legend i{width:8px;height:8px;border-radius:50%;display:inline-block;}
+
+  .disclaimer{margin:6px 14px 24px;padding:12px 14px;border-radius:12px;
+    background:var(--gunmetal);border:1px solid var(--steel-dim);font-size:11.5px;
+    line-height:1.5;color:var(--paper-dim);}
+  .disclaimer b{color:var(--paper);}
+  .disclaimer summary{cursor:pointer;color:var(--cyan);font-family:'Inter';font-weight:600;
+    font-size:12px;list-style:none;}
+  .disclaimer summary::-webkit-details-marker{display:none;}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark">R</div>
+      <div>
+        <div class="brand-name">RIDESENSE</div>
+        <div class="brand-sub">Vision Hazard Watch</div>
+      </div>
+    </div>
+    <div class="rec-pill" id="recPill"><span class="rec-dot"></span><span id="recLabel">STANDBY</span></div>
+  </div>
+
+  <div class="visor-wrap">
+    <div class="visor" id="visor">
+      <video id="video" autoplay playsinline muted></video>
+      <img id="streamImg" class="stream-img" style="display:none;" alt="helmet cam stream">
+      <canvas class="overlay" id="overlay"></canvas>
+
+      <div class="tick tl"></div><div class="tick tr"></div>
+      <div class="tick bl"></div><div class="tick br"></div>
+
+      <div class="hud-readout" id="hudReadout">MODEL: LOADING…</div>
+
+      <div class="visor-empty" id="visorEmpty">
+        <div class="icon">🏍️</div>
+        <div>Camera feed is off.<br>Start watch to begin scanning the road ahead.</div>
+      </div>
+
+      <div class="alert-banner" id="alertBanner">
+        <span class="glyph" id="alertGlyph">⚠</span>
+        <span id="alertText">—</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><i style="background:var(--danger)"></i>Critical</span>
+    <span><i style="background:var(--amber)"></i>Caution</span>
+    <span><i style="background:var(--cyan)"></i>Tracked</span>
+    <span><i style="background:var(--lime)"></i>Info</span>
+  </div>
+
+  <div class="console">
+    <div class="card radar">
+      <div class="card-label">Proximity Radar</div>
+      <canvas id="radarCanvas" width="120" height="120"></canvas>
+    </div>
+    <div class="card">
+      <div class="card-label">Hazard Log</div>
+      <div class="ticker" id="ticker">
+        <div class="tick-row empty">No hazards reported yet.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="row">
+      <button class="go-btn start" id="goBtn">▶&nbsp; Start Watch</button>
+      <button class="icon-btn" id="voiceBtn" title="Voice alerts">🔊</button>
+      <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
+    </div>
+
+    <div class="panel-fade" id="settingsPanel">
+      <div class="panel-inner">
+        <div>
+          <span class="field-label">Camera Source</span>
+          <div class="segmented" id="sourceSeg">
+            <button class="active" data-src="phone">Phone Camera</button>
+            <button data-src="stream">Helmet Cam Wi-Fi</button>
+          </div>
+        </div>
+
+        <div id="streamUrlField" style="display:none;">
+          <span class="field-label">Stream URL (MJPEG/HTTP)</span>
+          <input type="text" id="streamUrl" placeholder="http://192.168.1.1:8080/stream">
+          <div style="margin-top:8px;"><button class="small-btn" id="connectStreamBtn">Connect</button></div>
+        </div>
+
+        <div>
+          <span class="field-label">Detection Sensitivity</span>
+          <input type="range" id="sensitivity" min="30" max="80" value="50">
+        </div>
+
+        <div class="toggle-row">
+          <span class="field-label" style="margin:0;">Announce informational callouts</span>
+          <button class="switch" id="infoToggle"></button>
+        </div>
+
+        <div>
+          <button class="small-btn" id="testAlertBtn">Test voice alert</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <details class="disclaimer">
+    <summary>How this connects to a FreedConn R‑series camera →</summary>
+    <div style="margin-top:8px;">
+      FreedConn R‑series units (R1 Plus, R1 Pro, R3 Pro) broadcast their own Wi‑Fi hotspot and are read
+      by FreedConn's own <b>RoadCam</b> app — there's no public SDK for third‑party live‑feed access today.
+      This prototype runs its detection pipeline on your <b>phone's camera</b> as a stand‑in for that feed.
+      If your unit's Wi‑Fi module exposes a raw MJPEG/HTTP stream URL, you can point RideSense at it directly
+      via <b>Helmet Cam Wi‑Fi</b> above. All detection runs on‑device — no video ever leaves your phone.
+      <br><br>
+      <b>This is a driver‑assist prototype, not a certified safety device.</b> Distance and closing‑speed
+      estimates are approximated from bounding‑box size and are not calibrated to your camera's optics.
+      Mount your phone outside your primary sightline, rely on audio callouts rather than glancing at the
+      screen, and always ride to your own judgement and local law.
+    </div>
+  </details>
+
+</div>
+
+<script>
+(() => {
+  // ---------------- config ----------------
+  const ROAD_CLASSES = new Set(['person','bicycle','car','motorcycle','bus','truck','traffic light','stop sign']);
+  const VEHICLE_CLASSES = new Set(['car','motorcycle','bus','truck']);
+  const VULNERABLE_CLASSES = new Set(['person','bicycle']);
+  const SEV_COLOR = { critical:'#FF3B30', caution:'#FFA630', info:'#4CD9E8', tracked:'#4CD9E8' };
+  const DETECT_INTERVAL_MS = 260;
+  const TRACK_TIMEOUT_MS = 1100;
+  const MATCH_DIST_FRAC = 0.18;
+
+  // ---------------- state ----------------
+  let model = null;
+  let running = false;
+  let voiceOn = true;
+  let announceInfo = false;
+  let sensitivity = 0.5;      // min score
+  let source = 'phone';       // 'phone' | 'stream'
+  let tracks = [];
+  let trackIdSeq = 1;
+  let lastDetectAt = 0;
+  let cooldowns = new Map();  // key -> timestamp
+  let speakQueue = [];
+  let speaking = false;
+  let lastCritAt = 0;
+  let heavyTrafficLastAt = 0;
+  let detectFps = 0;
+
+  // ---------------- elements ----------------
+  const video = document.getElementById('video');
+  const streamImg = document.getElementById('streamImg');
+  const overlay = document.getElementById('overlay');
+  const octx = overlay.getContext('2d');
+  const visor = document.getElementById('visor');
+  const visorEmpty = document.getElementById('visorEmpty');
+  const hudReadout = document.getElementById('hudReadout');
+  const alertBanner = document.getElementById('alertBanner');
+  const alertGlyph = document.getElementById('alertGlyph');
+  const alertText = document.getElementById('alertText');
+  const recPill = document.getElementById('recPill');
+  const recLabel = document.getElementById('recLabel');
+  const ticker = document.getElementById('ticker');
+  const radarCanvas = document.getElementById('radarCanvas');
+  const rctx = radarCanvas.getContext('2d');
+  const goBtn = document.getElementById('goBtn');
+  const voiceBtn = document.getElementById('voiceBtn');
+  const settingsBtn = document.getElementById('settingsBtn');
+  const settingsPanel = document.getElementById('settingsPanel');
+  const sourceSeg = document.getElementById('sourceSeg');
+  const streamUrlField = document.getElementById('streamUrlField');
+  const streamUrlInput = document.getElementById('streamUrl');
+  const connectStreamBtn = document.getElementById('connectStreamBtn');
+  const sensitivityInput = document.getElementById('sensitivity');
+  const infoToggle = document.getElementById('infoToggle');
+  const testAlertBtn = document.getElementById('testAlertBtn');
+
+  voiceBtn.classList.add('active');
+  sensitivity = sensitivityInput.value / 100;
+
+  // ---------------- model load ----------------
+  async function loadModel(){
+    try{
+      hudReadout.textContent = 'MODEL: LOADING…';
+      model = await cocoSsd.load({ base:'lite_mobilenet_v2' });
+      hudReadout.textContent = 'MODEL: READY';
+    }catch(e){
+      hudReadout.textContent = 'MODEL: FAILED TO LOAD';
+      console.error(e);
+    }
+  }
+  loadModel();
+
+  // ---------------- source management ----------------
+  sourceSeg.addEventListener('click', (e) => {
+    const btn = e.target.closest('button'); if(!btn) return;
+    [...sourceSeg.children].forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    source = btn.dataset.src;
+    streamUrlField.style.display = source === 'stream' ? 'block' : 'none';
+  });
+
+  connectStreamBtn.addEventListener('click', () => {
+    const url = streamUrlInput.value.trim();
+    if(!url) return;
+    streamImg.src = url;
+  });
+
+  async function activatePhoneCamera(){
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video:{ facingMode:{ ideal:'environment' }, width:{ideal:1280}, height:{ideal:960} },
+        audio:false
+      });
+      video.srcObject = stream;
+      await video.play();
+      return true;
+    }catch(e){
+      console.error(e);
+      return false;
+    }
+  }
+
+  function stopPhoneCamera(){
+    const s = video.srcObject;
+    if(s){ s.getTracks().forEach(t=>t.stop()); }
+    video.srcObject = null;
+  }
+
+  function activeSourceEl(){
+    return source === 'stream' ? streamImg : video;
+  }
+
+  function sourceReady(){
+    if(source === 'stream') return streamImg.complete && streamImg.naturalWidth > 0;
+    return video.readyState >= 2;
+  }
+
+  // ---------------- geometry helpers ----------------
+  function frameSize(){
+    if(source === 'stream') return [streamImg.naturalWidth||320, streamImg.naturalHeight||240];
+    return [video.videoWidth||320, video.videoHeight||240];
+  }
+
+  function resizeCanvas(){
+    const rect = visor.getBoundingClientRect();
+    overlay.width = rect.width; overlay.height = rect.height;
+  }
+  window.addEventListener('resize', resizeCanvas);
+
+  // ---------------- tracking ----------------
+  function matchTrack(det, fw, fh){
+    const [x,y,w,h] = det.bbox;
+    const cx = x + w/2, cy = y + h/2;
+    const diag = Math.hypot(fw, fh);
+    let best = null, bestDist = Infinity;
+    for(const t of tracks){
+      if(t.cls !== det.class) continue;
+      const dist = Math.hypot(t.cx - cx, t.cy - cy);
+      if(dist < diag * MATCH_DIST_FRAC && dist < bestDist){ best = t; bestDist = dist; }
+    }
+    return best;
+  }
+
+  function updateTracks(dets, fw, fh, now){
+    const seen = new Set();
+    for(const det of dets){
+      const [x,y,w,h] = det.bbox;
+      const cx = x+w/2, cy = y+h/2;
+      const area = w*h;
+      let t = matchTrack(det, fw, fh);
+      if(!t){
+        t = { id:trackIdSeq++, cls:det.class, cx, cy, bbox:det.bbox, samples:[],
+              spokenBlindSpot:false, spokenInfo:false, firstSeen:now };
+        tracks.push(t);
+      }
+      t.cx=cx; t.cy=cy; t.bbox=det.bbox; t.score=det.score; t.lastSeen=now;
+      t.samples.push({t:now, area});
+      if(t.samples.length>6) t.samples.shift();
+      seen.add(t.id);
+    }
+    tracks = tracks.filter(t => (now - t.lastSeen) < TRACK_TIMEOUT_MS);
+    return tracks;
+  }
+
+  function growthRate(t){
+    if(t.samples.length<2) return 0;
+    const a = t.samples[0], b = t.samples[t.samples.length-1];
+    const dt = (b.t - a.t)/1000;
+    if(dt<=0 || a.area<=0) return 0;
+    return (b.area - a.area) / a.area / dt; // fractional growth per second
+  }
+
+  function zoneOf(t, fw){
+    const r = t.cx / fw;
+    if(r < 0.16 || r > 0.84) return 'peripheral';
+    if(r >= 0.34 && r <= 0.66) return 'center';
+    return 'side';
+  }
+
+  // ---------------- hazard evaluation ----------------
+  function fireHazard(key, severity, message, cooldownMs, opts={}){
+    const now = performance.now();
+    const last = cooldowns.get(key) || 0;
+    if(now - last < cooldownMs) return;
+    cooldowns.set(key, now);
+    logHazard(severity, message);
+    if(severity === 'critical' || severity === 'caution' || (severity==='info' && announceInfo)){
+      queueSpeech(message, severity);
+    }
+    if(severity === 'critical' || severity === 'caution') showBanner(severity, message);
+  }
+
+  function evaluateTracks(fw, fh){
+    const now = performance.now();
+    const frameArea = fw*fh;
+    let vehicleCount = 0;
+
+    for(const t of tracks){
+      const [,,w,h] = t.bbox;
+      const areaRatio = (w*h) / frameArea;
+      const zone = zoneOf(t, fw);
+      const growth = growthRate(t);
+      t._zone = zone; t._areaRatio = areaRatio; t._growth = growth;
+
+      if(VEHICLE_CLASSES.has(t.cls)){
+        if(zone==='center') vehicleCount++;
+
+        if(zone==='center' && areaRatio>0.16 && growth>0.55){
+          fireHazard('t'+t.id+':fcw','critical', 'Vehicle ahead — closing fast', 3500);
+        } else if(zone==='center' && areaRatio>0.10){
+          fireHazard('t'+t.id+':follow','caution', 'Vehicle ahead — maintain distance', 7000);
+        } else if(zone==='peripheral' && areaRatio>0.045 && !t.spokenBlindSpot){
+          t.spokenBlindSpot = true;
+          fireHazard('t'+t.id+':blind','caution', 'Vehicle in your blind spot', 6000);
+        }
+      }
+
+      if(VULNERABLE_CLASSES.has(t.cls) && areaRatio>0.035){
+        const label = t.cls==='person' ? 'Pedestrian ahead' : 'Cyclist ahead';
+        const sev = (areaRatio>0.13 || growth>0.5) ? 'critical' : 'caution';
+        fireHazard('t'+t.id+':vru', sev, label, sev==='critical'?3500:6500);
+      }
+
+      if(t.cls==='stop sign' && areaRatio>0.008 && !t.spokenInfo){
+        t.spokenInfo = true;
+        fireHazard('t'+t.id+':stop','info','Stop sign ahead', 999999);
+      }
+      if(t.cls==='traffic light' && areaRatio>0.02 && !t.spokenInfo){
+        t.spokenInfo = true;
+        fireHazard('t'+t.id+':light','info','Traffic signal ahead', 999999);
+      }
+    }
+
+    if(vehicleCount>=5 && now-heavyTrafficLastAt>18000){
+      heavyTrafficLastAt = now;
+      fireHazard('global:traffic','caution','Heavy traffic ahead — increase following distance', 18000);
+    }
+  }
+
+  // ---------------- speech ----------------
+  function queueSpeech(text, severity){
+    if(!voiceOn) return;
+    if(severity==='critical'){
+      speechSynthesis.cancel();
+      speakQueue = [{text,severity}];
+      speaking = false;
+    } else {
+      if(speakQueue.length>2) speakQueue.shift();
+      speakQueue.push({text,severity});
+    }
+    pumpSpeech();
+  }
+  function pumpSpeech(){
+    if(speaking || speakQueue.length===0) return;
+    const item = speakQueue.shift();
+    const u = new SpeechSynthesisUtterance(item.text);
+    u.rate = 1.02; u.pitch = 1.0; u.volume = 1.0;
+    u.onend = () => { speaking=false; pumpSpeech(); };
+    u.onerror = () => { speaking=false; pumpSpeech(); };
+    speaking = true;
+    speechSynthesis.speak(u);
+  }
+
+  // ---------------- UI: banner / ticker / radar ----------------
+  let bannerTimeout = null;
+  function showBanner(sev, msg){
+    alertBanner.className = 'alert-banner show ' + sev;
+    alertGlyph.textContent = sev==='critical' ? '⚠' : '⚑';
+    alertText.textContent = msg;
+    clearTimeout(bannerTimeout);
+    bannerTimeout = setTimeout(()=>{ alertBanner.classList.remove('show'); }, sev==='critical'?2800:3400);
+  }
+
+  function logHazard(sev, msg){
+    const empty = ticker.querySelector('.tick-row.empty');
+    if(empty) empty.remove();
+    const row = document.createElement('div');
+    row.className = 'tick-row';
+    const time = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    row.innerHTML = `<span class="dot" style="background:${SEV_COLOR[sev]}"></span>
+      <span class="msg">${msg}<br><span class="t">${time}</span></span>`;
+    ticker.appendChild(row);
+    while(ticker.children.length>30) ticker.removeChild(ticker.firstChild);
+    ticker.scrollTop = ticker.scrollHeight;
+  }
+
+  function drawRadar(fw){
+    const W = radarCanvas.width, H = radarCanvas.height;
+    rctx.clearRect(0,0,W,H);
+    // sweep field
+    rctx.fillStyle = '#12161B';
+    rctx.beginPath();
+    rctx.moveTo(W/2,H);
+    rctx.arc(W/2,H, H-6, Math.PI, 2*Math.PI);
+    rctx.closePath(); rctx.fill();
+    rctx.strokeStyle = '#2C333D'; rctx.lineWidth=1;
+    for(const frac of [0.34,0.67,1]){
+      rctx.beginPath();
+      rctx.arc(W/2,H,(H-6)*frac,Math.PI,2*Math.PI);
+      rctx.stroke();
+    }
+    rctx.beginPath(); rctx.moveTo(6,H); rctx.lineTo(W-6,H); rctx.stroke();
+
+    // rider marker
+    rctx.fillStyle = '#4A5568';
+    rctx.beginPath(); rctx.arc(W/2,H-2,3,0,Math.PI*2); rctx.fill();
+
+    for(const t of tracks){
+      if(!ROAD_CLASSES.has(t.cls)) continue;
+      const angFrac = (t.cx/fw); // 0..1
+      const ang = Math.PI + angFrac*Math.PI; // PI..2PI (left..right across top semicircle)
+      const rNorm = Math.max(0.12, 1 - Math.min(1, (t._areaRatio||0)*4)); // closer = bigger area = smaller r
+      const rr = (H-10)*rNorm;
+      const px = W/2 + rr*Math.cos(ang);
+      const py = H + rr*Math.sin(ang);
+      let sev = 'tracked';
+      if(VEHICLE_CLASSES.has(t.cls) && t._zone==='center' && t._areaRatio>0.16 && t._growth>0.55) sev='critical';
+      else if((VEHICLE_CLASSES.has(t.cls) && (t._zone==='center'&&t._areaRatio>0.10 || (t._zone==='peripheral'&&t._areaRatio>0.045))) ||
+              (VULNERABLE_CLASSES.has(t.cls) && t._areaRatio>0.035)) sev='caution';
+      rctx.fillStyle = SEV_COLOR[sev];
+      rctx.beginPath(); rctx.arc(px,py,4,0,Math.PI*2); rctx.fill();
+    }
+  }
+
+  function drawOverlay(dets, fw, fh){
+    octx.clearRect(0,0,overlay.width,overlay.height);
+    const sx = overlay.width/fw, sy = overlay.height/fh;
+    for(const t of tracks){
+      if(!ROAD_CLASSES.has(t.cls)) continue;
+      const [x,y,w,h] = t.bbox;
+      let sev = 'tracked';
+      if(VEHICLE_CLASSES.has(t.cls) && t._zone==='center' && t._areaRatio>0.16 && t._growth>0.55) sev='critical';
+      else if((VEHICLE_CLASSES.has(t.cls) && (t._zone==='center'&&t._areaRatio>0.10 || (t._zone==='peripheral'&&t._areaRatio>0.045))) ||
+              (VULNERABLE_CLASSES.has(t.cls) && t._areaRatio>0.035)) sev='caution';
+      octx.strokeStyle = SEV_COLOR[sev];
+      octx.lineWidth = sev==='critical' ? 3 : 2;
+      octx.strokeRect(x*sx, y*sy, w*sx, h*sy);
+      octx.fillStyle = SEV_COLOR[sev];
+      const label = t.cls.toUpperCase();
+      octx.font = "600 11px Inter, sans-serif";
+      const tw = octx.measureText(label).width;
+      octx.fillRect(x*sx, y*sy-16, tw+10, 16);
+      octx.fillStyle = '#0A0C0E';
+      octx.fillText(label, x*sx+5, y*sy-4);
+    }
+  }
+
+  // ---------------- main loop ----------------
+  async function tick(){
+    if(!running) return;
+    requestAnimationFrame(tick);
+    const now = performance.now();
+    if(!model || !sourceReady() || now-lastDetectAt < DETECT_INTERVAL_MS) return;
+    lastDetectAt = now;
+
+    const el = activeSourceEl();
+    let preds;
+    try{ preds = await model.detect(el); } catch(e){ return; }
+
+    const filtered = preds.filter(p => ROAD_CLASSES.has(p.class) && p.score >= sensitivity);
+    const [fw, fh] = frameSize();
+    updateTracks(filtered, fw, fh, now);
+    evaluateTracks(fw, fh);
+    drawOverlay(filtered, fw, fh);
+    drawRadar(fw);
+
+    detectFps = Math.round(1000 / Math.max(16, now - (tick._last||now)));
+    tick._last = now;
+    hudReadout.textContent = `TRACKING ${tracks.length}  ·  ${detectFps} fps`;
+  }
+
+  // ---------------- start / stop ----------------
+  async function startWatch(){
+    resizeCanvas();
+    if(source==='phone'){
+      visorEmpty.style.display='flex';
+      const ok = await activatePhoneCamera();
+      if(!ok){
+        visorEmpty.innerHTML = '<div class="icon">🚫</div><div>Camera permission was denied.<br>Enable camera access for this site and try again.</div>';
+        return;
+      }
+      video.style.display='block'; streamImg.style.display='none';
+    } else {
+      if(!streamImg.src){ streamUrlInput.focus(); return; }
+      video.style.display='none'; streamImg.style.display='block';
+    }
+    visorEmpty.style.display='none';
+    running = true;
+    goBtn.textContent = '■  Stop Watch';
+    goBtn.classList.remove('start'); goBtn.classList.add('stop');
+    recPill.classList.add('live'); recLabel.textContent='SCANNING';
+    resizeCanvas();
+    requestAnimationFrame(tick);
+  }
+
+  function stopWatch(){
+    running = false;
+    stopPhoneCamera();
+    tracks = [];
+    octx.clearRect(0,0,overlay.width,overlay.height);
+    alertBanner.classList.remove('show');
+    speechSynthesis.cancel(); speakQueue=[]; speaking=false;
+    goBtn.textContent = '▶  Start Watch';
+    goBtn.classList.remove('stop'); goBtn.classList.add('start');
+    recPill.classList.remove('live'); recLabel.textContent='STANDBY';
+    visorEmpty.style.display='flex';
+    visorEmpty.innerHTML = '<div class="icon">🏍️</div><div>Camera feed is off.<br>Start watch to begin scanning the road ahead.</div>';
+  }
+
+  goBtn.addEventListener('click', () => running ? stopWatch() : startWatch());
+
+  voiceBtn.addEventListener('click', () => {
+    voiceOn = !voiceOn;
+    voiceBtn.classList.toggle('active', voiceOn);
+    if(!voiceOn){ speechSynthesis.cancel(); speakQueue=[]; speaking=false; }
+  });
+
+  settingsBtn.addEventListener('click', () => {
+    settingsPanel.classList.toggle('open');
+    settingsBtn.classList.toggle('active');
+  });
+
+  sensitivityInput.addEventListener('input', () => { sensitivity = sensitivityInput.value/100; });
+
+  infoToggle.addEventListener('click', () => {
+    announceInfo = !announceInfo;
+    infoToggle.classList.toggle('on', announceInfo);
+  });
+
+  testAlertBtn.addEventListener('click', () => {
+    logHazard('critical','Test alert — vehicle ahead, closing fast');
+    showBanner('critical','Vehicle ahead — closing fast');
+    queueSpeech('Test alert. Vehicle ahead, closing fast.', 'critical');
+  });
+
+  // keep canvas sized correctly on load
+  setTimeout(resizeCanvas, 200);
+})();
+</script>
+</body>
+</html>
